@@ -319,7 +319,8 @@ def get_month_names(width='wide', context='format', locale=LC_TIME):
     :param context: the context, either "format" or "stand-alone"
     :param locale: the `Locale` object, or a locale string
     """
-    return Locale.parse(locale).months[context][width]
+    l = Locale.parse(locale)
+    return l.months[context][width]
 
 
 def get_quarter_names(width='wide', context='format', locale=LC_TIME):
