@@ -280,14 +280,19 @@ class Alias(object):
         return data
 
 class MutableDictView(MutableMapping):
-    __slots__ = ('_overrides', '_deleted_keys', '_base')
+    __slots__ = ('_overrides', '_deleted_keys', '_base', '_lock')
 
     def __init__(self, base):
         self._base = base
         self._deleted_keys = None
         self._overrides = None
+        self._lock = threading.Lock()
+
 
     def __keys(self):
+        # We don't need the lock because if someone has added an override and
+        # not yet discarded the key from deleted keys, it's as if they just
+        # hadn't added the override yet.
         k = set(self._base.keys())
         if self._overrides is not None:
             k |= set(self._overrides.keys())
@@ -302,6 +307,10 @@ class MutableDictView(MutableMapping):
         return iter(self.__keys())
 
     def __getitem__(self, key):
+        # We don't need the lock to read the item b/c if someone changes deleted
+        # keys or overrides while we are executing the code, we either end up
+        # with the same effect as *before* they changed them, or the same effect
+        # as *after* they changed them, but nothing in the middle is possible.
         if self._deleted_keys is not None and key in self._deleted_keys:
             raise KeyError(key)
         if self._overrides is not None and key in self._overrides:
@@ -309,16 +318,20 @@ class MutableDictView(MutableMapping):
         return self._base[key]
 
     def __setitem__(self, key, value):
-        if self._overrides is None:
-            self._overrides = {}
-        self._overrides[key] = value
-        if self._deleted_keys is not None:
-            self._deleted_keys.discard(key)
+        # We need the lock because someone else could be simultaneously setting
+        # a key, at which point we might race to set overrides to the empty
+        # dict.
+        with self._lock:
+            if self._overrides is None:
+                self._overrides = {}
+            self._overrides[key] = value
+            if self._deleted_keys is not None:
+                self._deleted_keys.discard(key)
 
     def __delitem__(self, key):
-        if self._deleted_keys is None:
-            self._deleted_keys = set()
-        self._deleted_keys.add(key)
+        # Not implemented in honor of the fact that this is a specialized class
+        # meant only to store locale data, and we never delete from it.
+        raise NotImplementedError("Nope")
 
     def copy(self):
         return MutableDictView(self)
@@ -357,14 +370,23 @@ class LocaleDataDict(MutableMapping):
             # Return a nested alias-resolving dict, and store it for the next
             # time.  It was an alias that got looked up, or a raw dict.
             val = LocaleDataDict(val, base=self.base)
+            # This write is threadsafe presuming that this is the only place we
+            # ever read out the value of a key and then set the key later based
+            # on that value, and that this code is idempotent -- if some other
+            # code is doing the same set, it's setting the same key to the same
+            # value.
             self._data[key] = val
         return val
 
+    # Should only be called by merge()
     def __setitem__(self, key, value):
         self._data[key] = value
 
     def __delitem__(self, key):
-        del self._data[key]
+        # This is left nonimplemented as a reminder that this is not meant to be
+        # used as a general dictionary, but rather only as a read-only
+        # respository for locale data
+        raise NotImplementedError("Nope")
 
     def copy(self):
         return LocaleDataDict(self._data.copy(), base=self.base)
